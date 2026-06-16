@@ -108,9 +108,9 @@
 <section class="mint-section">
   <div class="mint-box">
     <div class="mint-stats">
-      <div class="stat"><span class="stat-val" id="statMinted">500</span><span class="stat-label">Minted</span></div>
+      <div class="stat"><span class="stat-val" id="statMinted">—</span><span class="stat-label">Minted</span></div>
       <div class="stat"><span class="stat-val">1500</span><span class="stat-label">Supply</span></div>
-      <div class="stat"><span class="stat-val" id="statRemain">1000</span><span class="stat-label">Remaining</span></div>
+      <div class="stat"><span class="stat-val" id="statRemain">—</span><span class="stat-label">Remaining</span></div>
     </div>
     <div class="progress-wrap">
       <div class="progress-header">
@@ -174,9 +174,34 @@ const ABI = [
 let provider, signer, contract;
 let currentQty = 1;
 
-async function loadChainData() {
+const RPC_URLS = [
+  "https://eth.llamarpc.com",
+  "https://ethereum.publicnode.com",
+  "https://rpc.ankr.com/eth",
+  "https://cloudflare-eth.com",
+];
+
+async function getRpcProvider() {
+  const mainnet = ethers.Network.from(1);
+  let lastErr;
+  for (const url of RPC_URLS) {
+    try {
+      const p = new ethers.JsonRpcProvider(url, mainnet, { staticNetwork: mainnet });
+      // Use a direct call instead of getBlockNumber() pre-flight,
+      // which itself triggers network auto-detection and can fail.
+      await p.getCode(CONTRACT);
+      return p;
+    } catch(e) {
+      console.log("RPC failed:", url, e.message || e);
+      lastErr = e;
+    }
+  }
+  throw lastErr || new Error("All RPC endpoints failed");
+}
+
+async function loadChainData(attempt = 1) {
   try {
-    const rpc = new ethers.JsonRpcProvider("https://eth.llamarpc.com");
+    const rpc = await getRpcProvider();
     const c = new ethers.Contract(CONTRACT, ABI, rpc);
     const supply = await c.totalSupply();
     const total = Number(supply);
@@ -191,27 +216,51 @@ async function loadChainData() {
       document.getElementById("priceDisplay").textContent = "FREE";
       document.getElementById("priceDisplay").classList.add("free");
       document.getElementById("priceNote").textContent = "First 500 tokens free · Max 10 per wallet";
+    } else {
+      document.getElementById("priceDisplay").textContent = "0.0003 ETH";
+      document.getElementById("priceNote").textContent = "Tokens #501–#1500 · Max 10 per wallet";
     }
     loadPreviews(c, total);
-  } catch(e) { console.log("RPC:", e); }
+  } catch(e) {
+    console.log("loadChainData failed (attempt " + attempt + "):", e);
+    document.getElementById("statMinted").textContent = "ERR";
+    document.getElementById("statRemain").textContent = "ERR";
+    if (attempt < 3) {
+      setTimeout(() => loadChainData(attempt + 1), 2000);
+    }
+  }
 }
 
 async function loadPreviews(c, supply) {
   const grid = document.getElementById("previewGrid");
-  grid.innerHTML = "";
-  const n = Math.min(6, supply);
+  const n = Math.min(4, supply);
+  const ids = [];
   for (let i = 0; i < n; i++) {
-    const id = Math.floor(Math.random() * supply) + 1;
+    ids.push(Math.floor(Math.random() * supply) + 1);
+  }
+
+  grid.innerHTML = "";
+  for (let i = 0; i < n; i++) {
+    const card = document.createElement("div");
+    card.className = "preview-card loading-card";
+    card.textContent = "Loading...";
+    grid.appendChild(card);
+  }
+
+  for (let i = 0; i < ids.length; i++) {
+    const id = ids[i];
     try {
       const uri = await c.tokenURI(BigInt(id));
       const json = JSON.parse(atob(uri.replace("data:application/json;base64,", "")));
-      const card = document.createElement("div");
+      const card = grid.children[i];
       card.className = "preview-card";
       card.innerHTML = `<img src="${json.image}" alt="VIK #${id}"><div class="card-label">#${id}</div>`;
-      grid.appendChild(card);
-    } catch(e) {}
+    } catch(e) {
+      console.log("Preview load failed for token", id, e);
+      const card = grid.children[i];
+      card.textContent = "—";
+    }
   }
-  if (grid.children.length === 0) grid.innerHTML = "";
 }
 
 function changeQty(d) {
